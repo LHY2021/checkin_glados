@@ -1,0 +1,11 @@
+base_url = "https://glados.one"
+fallback_base_urls = ["https://glados.rocks", "https://glados.cloud"]
+cookie = "your_cookie_here"
+user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+run_time = "09:00"
+checkin_url = "/api/user/checkin"
+status_url = "/api/user/status"
+console_url = "/console/checkin"
+# Optional: set these when GLaDOS must be reached through a local proxy.
+http_proxy = ""
+https_proxy = ""

@@ -1,0 +1,129 @@
+name: GLaDOS Daily Check-in
+
+on:
+  schedule:
+    - cron: "15 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: glados-daily-checkin
+  cancel-in-progress: false
+
+jobs:
+  checkin:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name || github.event.repository.default_branch }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Create action config
+        env:
+          GLADOS_COOKIE: ${{ secrets.GLADOS_COOKIE }}
+          GLADOS_BASE_URL: ${{ vars.GLADOS_BASE_URL }}
+          GLADOS_FALLBACK_BASE_URLS: ${{ vars.GLADOS_FALLBACK_BASE_URLS }}
+          GLADOS_USER_AGENT: ${{ vars.GLADOS_USER_AGENT }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          root = Path.cwd()
+          cookie = os.environ.get("GLADOS_COOKIE", "").strip()
+          if not cookie:
+              raise SystemExit("Missing required repository secret: GLADOS_COOKIE")
+
+          base_url = os.environ.get("GLADOS_BASE_URL", "").strip() or "https://glados.one"
+          fallback_raw = os.environ.get("GLADOS_FALLBACK_BASE_URLS", "").strip()
+          fallback_urls = [
+              item.strip()
+              for item in (fallback_raw.split(",") if fallback_raw else ["https://glados.rocks", "https://glados.cloud"])
+              if item.strip() and item.strip() != base_url
+          ]
+          user_agent = os.environ.get("GLADOS_USER_AGENT", "").strip() or (
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+              "AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/136.0.0.0 Safari/537.36"
+          )
+
+          def toml_string(value: str) -> str:
+              escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+              return f'"{escaped}"'
+
+          lines = [
+              f"base_url = {toml_string(base_url)}",
+              "fallback_base_urls = [" + ", ".join(toml_string(item) for item in fallback_urls) + "]",
+              f"cookie = {toml_string(cookie)}",
+              f"user_agent = {toml_string(user_agent)}",
+              'run_time = "13:15"',
+              'checkin_url = "/api/user/checkin"',
+              'status_url = "/api/user/status"',
+              'console_url = "/console/checkin"',
+              'http_proxy = ""',
+              'https_proxy = ""',
+          ]
+          (root / "config.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+
+      - name: Run GLaDOS check-in
+        id: checkin
+        continue-on-error: true
+        run: python -m glados_checkin --config "$GITHUB_WORKSPACE/config.toml" run
+
+      - name: Publish history summary
+        if: always()
+        run: |
+          {
+            echo "## GLaDOS Check-in"
+            echo
+            if [ -f data/checkin_history.csv ]; then
+              echo "Latest history rows:"
+              echo
+              echo '```csv'
+              tail -n 5 data/checkin_history.csv
+              echo '```'
+            else
+              echo "No history file was produced."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit updated history
+        if: always()
+        run: |
+          if [ ! -f data/checkin_history.csv ]; then
+            echo "No history file to commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f data/checkin_history.csv
+
+          if git diff --cached --quiet; then
+            echo "No history changes to commit."
+            exit 0
+          fi
+
+          git commit -m "chore: update GLaDOS check-in history"
+          git push origin HEAD:${{ github.ref_name || github.event.repository.default_branch }}
+
+      - name: Upload history artifact
+        if: always() && hashFiles('data/checkin_history.csv') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: glados-checkin-history
+          path: data/checkin_history.csv
+
+      - name: Fail workflow on check-in error
+        if: steps.checkin.outcome == 'failure'
+        run: exit 1
